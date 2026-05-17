@@ -117,16 +117,46 @@ def get_sign_header(url: str, method: str, body: Optional[dict], h: dict, token:
 
 async def api_post(session: aiohttp.ClientSession, url: str, json_data: dict = None,
                    headers: dict = None) -> dict:
-    """异步 POST 请求"""
-    async with session.post(url, json=json_data, headers=headers) as resp:
-        return await resp.json()
+    """异步 POST 请求（带日志）"""
+    import time as _time
+    start = _time.time()
+    logger.info(f"🔗 POST {url}")
+    try:
+        async with session.post(url, json=json_data, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            result = await resp.json()
+            elapsed = (_time.time() - start) * 1000
+            status = result.get('status') or result.get('code')
+            if status != 0:
+                logger.warning(f"  ⚠️ [{resp.status}] {elapsed:.0f}ms → status={status} msg={result.get('message') or result.get('msg', result)}")
+            else:
+                logger.info(f"  ✅ [{resp.status}] {elapsed:.0f}ms")
+            return result
+    except Exception as e:
+        elapsed = (_time.time() - start) * 1000
+        logger.error(f"  ❌ {elapsed:.0f}ms → {type(e).__name__}: {e}")
+        raise
 
 
 async def api_get(session: aiohttp.ClientSession, url: str,
                   headers: dict = None) -> dict:
-    """异步 GET 请求"""
-    async with session.get(url, headers=headers) as resp:
-        return await resp.json()
+    """异步 GET 请求（带日志）"""
+    import time as _time
+    start = _time.time()
+    logger.info(f"🔗 GET {url}")
+    try:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            result = await resp.json()
+            elapsed = (_time.time() - start) * 1000
+            status = result.get('status') or result.get('code')
+            if status not in (0, None):
+                logger.warning(f"  ⚠️ [{resp.status}] {elapsed:.0f}ms → status={status} msg={result.get('message') or result.get('msg', result)}")
+            else:
+                logger.info(f"  ✅ [{resp.status}] {elapsed:.0f}ms")
+            return result
+    except Exception as e:
+        elapsed = (_time.time() - start) * 1000
+        logger.error(f"  ❌ {elapsed:.0f}ms → {type(e).__name__}: {e}")
+        raise
 
 
 def parse_user_token(t: str) -> str:
