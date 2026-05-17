@@ -63,6 +63,13 @@ class SklandSignPlugin(Star):
         插件实例化 + 事件绑定完成后自动调用。
         在此处启动定时签到 + 预生成 dId（避免首次用时阻塞）。
         """
+        # 设置 dId 持久化缓存（避免每次重启重新计算）
+        try:
+            from .lib.security import set_cache_dir
+            set_cache_dir(str(_DATA_BASE))
+        except Exception as e:
+            logger.warning(f"设置 dId 缓存目录失败: {e}")
+
         # 预生成设备指纹 dId，将同步阻塞移到加载阶段而非用户操作时
         try:
             from .lib.skyland import _get_login_header
@@ -305,22 +312,44 @@ class SklandSignPlugin(Star):
         yield event.plain_result(
             "🌠 森空岛自动签到 v1.0\n\n"
             "📋 可用指令：\n"
-            "  /skland bind <token>  绑定鹰角通行证 token\n"
+            "  /skland bind <token>  绑定鹰角通行证 token（推荐，最快的方法）\n"
             "  /skland login         通过手机号+验证码登录绑定\n"
             "  /skland sign          立即手动签到\n"
             "  /skland status        查看签到状态\n"
-            "  /skland unbind        解绑账号\n\n"
+            "  /skland unbind        解绑账号\n"
+            "  /skland did           查看设备指纹状态（如遇登录问题）\n\n"
             "管理员指令：\n"
             "  /skland list          查看所有绑定用户\n"
             "  /skland remove <id>   移除指定用户的绑定\n"
             "  /skland broadcast <msg> 向所有用户群发\n\n"
-            "💡 如何获取 token？\n"
-            "  1. 打开 https://www.skland.com 并登录\n"
-            "  2. 按 F12 → 控制台，粘贴：\n"
-            "     copy(JSON.parse(localStorage.getItem('userInfo')).token)\n"
-            "  3. 发送 /skland bind 加上你复制的内容\n\n"
+            "💡 推荐使用 /skland login 手机号登录（无需浏览器）\n"
+            "💡 也可用 /skland bind 绑定 token\n\n"
             "📌 绑定后每天 09:05 自动签到，结果会推送到你这里。"
         )
+
+    @skland.command("did")
+    async def did(self, event: AstrMessageEvent):
+        """查看设备指纹状态"""
+        from .lib.security import _load_cached_did
+        from .lib.skyland import _get_login_header
+
+        cached = _load_cached_did()
+        status_lines = ["📟 设备指纹 (dId) 状态"]
+        if cached:
+            status_lines.append(f"✅ 已缓存: {cached[:16]}...{cached[-8:]}")
+            status_lines.append("⏰ 缓存位置: plugin_data 目录")
+            status_lines.append("💡 如需重新生成，可删除缓存文件后重载插件")
+
+            # 检查是否是 fallback
+            if len(cached) < 40:
+                status_lines.append("⚠️ 当前使用的是 fallback dId")
+                status_lines.append("   森空岛 API 可能拒绝请求")
+                status_lines.append("   尝试在可访问 fp-it.portal101.cn 的网络下重载插件")
+        else:
+            status_lines.append("❌ 未生成 dId")
+            status_lines.append("⏳ 将在首次使用 /skland login 时自动生成")
+
+        yield event.plain_result("\n".join(status_lines))
 
     # ==================== 指令: 绑定 ====================
 
