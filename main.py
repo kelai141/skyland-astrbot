@@ -418,13 +418,22 @@ class SklandSignPlugin(Star):
 
         @session_waiter(timeout=180)
         async def login_handler(controller: SessionController, event: AstrMessageEvent):
+            # 过滤 Bot 自身消息、空消息、指令消息
             text = event.message_str.strip()
 
-            # 如果用户发送了指令（以 / 开头），提示正在登录流程中
+            # 空消息或太短的消息（如 Bot 自己被回显的提示语）直接忽略
+            if len(text) < 2:
+                return
+
+            # 指令消息
             if text.startswith("/"):
                 await event.send(event.plain_result(
                     "⚠️ 你正在手机号登录流程中，无法执行其他指令。\n"
                     '如需退出请发送"取消"，完成当前流程后再使用其他指令。'))
+                return
+
+            # Bot 自己的消息（部分 QQ 协议会把 Bot 消息回显）直接忽略
+            if hasattr(event, 'get_self_id') and event.get_self_id() == event.get_sender_id():
                 return
 
             # 取消操作（任何步骤都支持）
