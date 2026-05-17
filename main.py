@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import Plain
@@ -23,11 +24,20 @@ from .lib.skyland import (
 
 logger = logging.getLogger(__name__)
 
-# 数据存放目录
-DATA_DIR = os.path.join("data", "plugins", "astrbot_plugin_skland")
-os.makedirs(DATA_DIR, exist_ok=True)
-DATA_FILE = os.path.join(DATA_DIR, "users.json")
-DATA_BACKUP_FILE = os.path.join(DATA_DIR, "users.json.bak")
+# 使用 AstrBot 官方推荐的插件数据目录
+# 此目录在重启/重载后不会丢失
+try:
+    from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+    _DATA_BASE = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_skland"
+except (ImportError, Exception):
+    # 降级：兼容旧版本
+    _DATA_BASE = Path("data") / "plugin_data" / "astrbot_plugin_skland"
+
+_DATA_BASE.mkdir(parents=True, exist_ok=True)
+
+# 用户数据文件路径（使用官方持久化目录）
+DATA_FILE = str(_DATA_BASE / "users.json")
+DATA_BACKUP_FILE = str(_DATA_BASE / "users.json.bak")
 
 
 @register("astrbot_plugin_skland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理")
@@ -186,7 +196,7 @@ class SklandSignPlugin(Star):
         """
         try:
             # 写入临时文件
-            fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix="users_", suffix=".json")
+            fd, tmp_path = tempfile.mkstemp(dir=str(_DATA_BASE), prefix="users_", suffix=".json")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
 
