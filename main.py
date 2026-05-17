@@ -375,119 +375,122 @@ class SklandSignPlugin(Star):
 
     @skland.command("login")
     async def login(self, event: AstrMessageEvent):
-        """通过手机号+验证码登录绑定"""
+        """通过手机号+验证码登录绑定
+
+        使用单层 session_waiter + 状态变量实现多步流程，
+        避免嵌套 session_waiter 导致的状态混乱。
+        """
         from .lib.skyland import api_post, LOGIN_CODE_URL, TOKEN_PHONE_CODE_URL, _get_login_header
         from astrbot.core.utils.session_waiter import session_waiter, SessionController
 
-        try:
-            yield event.plain_result('📱 请输入你的手机号（发送"取消"可取消操作）：')
+        state = {"step": "phone", "phone": ""}
 
-            @session_waiter(timeout=120)
-            async def wait_phone(controller: SessionController, event: AstrMessageEvent):
-                phone = event.message_str.strip()
-                if phone == "取消":
-                    await event.send(event.plain_result("❌ 已取消绑定"))
-                    controller.stop()
-                    return
+        yield event.plain_result('📱 请输入你的手机号（发送"取消"可取消操作）：')
 
-                # 去除手机号中可能携带的空格、横线等
-                phone = phone.replace(" ", "").replace("-", "").replace("+86", "")
+        @session_waiter(timeout=180)
+        async def login_handler(controller: SessionController, event: AstrMessageEvent):
+            text = event.message_str.strip()
+
+            # 取消操作（任何步骤都支持）
+            if text == "取消":
+                await event.send(event.plain_result("❌ 已取消绑定"))
+                controller.stop()
+                return
+
+            if state["step"] == "phone":
+                # —— 步骤1：接收手机号 ——
+                phone = text.replace(" ", "").replace("-", "").replace("+86", "")
                 if not phone.isdigit() or len(phone) != 11:
                     await event.send(event.plain_result("⚠️ 手机号格式不正确，请输入11位手机号，如 13800138000："))
-                    return
+                    return  # 同一 session，继续等待
+
+                state["phone"] = phone
 
                 # 发送验证码
+                await event.send(event.plain_result("⏳ 正在发送验证码..."))
                 try:
                     async with aiohttp.ClientSession() as session:
                         resp = await api_post(session, LOGIN_CODE_URL,
                                               json_data={'phone': phone, 'type': 2},
                                               headers=_get_login_header())
                         if resp.get("status") != 0:
-                            await event.send(event.plain_result(f"❌ 发送验证码失败: {resp.get('msg', '未知错误')}"))
+                            await event.send(event.plain_result(
+                                f"❌ 发送验证码失败: {resp.get('msg', '未知错误')}\n"
+                                "请稍后重试，或改用 /skland bind <token> 方式绑定。"))
                             controller.stop()
                             return
                 except Exception as e:
                     err_text = str(e)
-                    # 如果是 dId 失败，给更友好的提示
                     if "dId" in err_text or "数美" in err_text:
                         await event.send(event.plain_result(
-                            "⚠️ 设备指纹生成失败（网络环境问题），请稍后重试。\n"
-                            "或者改用 /skland bind <token> 方式绑定。"
-                        ))
+                            "⚠️ 设备指纹生成失败，请稍后重试。\n"
+                            "或者改用 /skland bind <token> 方式绑定。"))
                     else:
                         await event.send(event.plain_result(f"❌ 发送验证码出错: {err_text}"))
                     controller.stop()
                     return
 
+                # 成功进入下一步
+                state["step"] = "code"
                 await event.send(event.plain_result('📱 验证码已发送，请输入6位验证码（发送"取消"可取消）：'))
 
-                @session_waiter(timeout=120)
-                async def wait_code(controller: SessionController, event: AstrMessageEvent):
-                    code = event.message_str.strip()
-                    if code == "取消":
-                        await event.send(event.plain_result("❌ 已取消绑定"))
-                        controller.stop()
-                        return
+            elif state["step"] == "code":
+                # —— 步骤2：接收验证码 ——
+                code = text
+                if not code.isdigit() or len(code) != 6:
+                    await event.send(event.plain_result("⚠️ 验证码格式不正确，请输入6位数字验证码："))
+                    return
 
-                    # 用验证码登录
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            r = await api_post(session, TOKEN_PHONE_CODE_URL,
-                                               json_data={"phone": phone, "code": code},
-                                               headers=_get_login_header())
-                            if r.get("status") != 0:
-                                await event.send(
-                                    event.plain_result(f'❌ 登录失败: {r.get("msg", "请检查验证码是否正确")}\n'
-                                                       f'输入"继续"重新尝试，其他内容取消'))
-                                # 这里可以允许重试，但简化处理：结束会话
-                                controller.stop()
-                                return
-
-                            token = r['data']['token']
-                    except Exception as e:
-                        await event.send(event.plain_result(f"❌ 登录出错: {e}"))
-                        controller.stop()
-                        return
-
-                    # 验证 token 并绑定
-                    await event.send(event.plain_result("⏳ 登录成功，正在验证..."))
-                    success, info, cred_resp = await verify_token(token)
-                    if not success:
-                        await event.send(event.plain_result(f"❌ token 验证失败: {info}"))
-                        controller.stop()
-                        return
-
-                    sid = event.unified_msg_origin
-                    self.data["users"][sid] = self._build_user_entry(sid, event, token, info, cred_resp)
-                    self.data["stats"]["total_bindings"] = len(self.data["users"])
-                    self._save_data()
-                    self._start_auto_sign_loop()
-
-                    await event.send(event.plain_result(
-                        f"✅ 绑定成功！🎉\n"
-                        f"检测到角色：{info}\n\n"
-                        f"📌 每天 09:05 将自动签到\n"
-                        f"💪 现在发送 /skland sign 立即签到试试吧！"
-                    ))
-                    controller.stop()
+                phone = state["phone"]
+                await event.send(event.plain_result("⏳ 正在验证..."))
 
                 try:
-                    await wait_code(event)
-                except TimeoutError:
-                    await event.send(event.plain_result("⏰ 验证码输入超时，请重新发送 /skland login 重试"))
+                    async with aiohttp.ClientSession() as session:
+                        r = await api_post(session, TOKEN_PHONE_CODE_URL,
+                                           json_data={"phone": phone, "code": code},
+                                           headers=_get_login_header())
+                        if r.get("status") != 0:
+                            await event.send(event.plain_result(
+                                f"❌ 登录失败: {r.get('msg', '验证码错误，请重新输入')}"))
+                            # 重新回到验证码输入状态
+                            state["step"] = "code"
+                            await event.send(event.plain_result('请重新输入6位验证码（发送"取消"取消）：'))
+                            return
+
+                        token = r['data']['token']
                 except Exception as e:
-                    await event.send(event.plain_result(f"❌ 出错: {e}"))
+                    await event.send(event.plain_result(f"❌ 登录出错: {e}"))
+                    controller.stop()
+                    return
 
-            try:
-                await wait_phone(event)
-            except TimeoutError:
-                yield event.plain_result("⏰ 手机号输入超时，请重新发送 /skland login 重试")
-            except Exception as e:
-                yield event.plain_result(f"❌ 出错: {e}")
+                # 验证 token 并绑定
+                success, info, cred_resp = await verify_token(token)
+                if not success:
+                    await event.send(event.plain_result(f"❌ token 验证失败: {info}"))
+                    controller.stop()
+                    return
 
+                sid = event.unified_msg_origin
+                self.data["users"][sid] = self._build_user_entry(sid, event, token, info, cred_resp)
+                self.data["stats"]["total_bindings"] = len(self.data["users"])
+                self._save_data()
+                self._start_auto_sign_loop()
+
+                await event.send(event.plain_result(
+                    f"✅ 绑定成功！🎉\n"
+                    f"检测到角色：{info}\n\n"
+                    f"📌 每天 09:05 将自动签到\n"
+                    f"💪 现在发送 /skland sign 立即签到试试吧！"
+                ))
+                controller.stop()
+
+        try:
+            await login_handler(event)
+        except TimeoutError:
+            yield event.plain_result("⏰ 操作超时，已取消。请重新发送 /skland login 重试。")
         except Exception as e:
-            logger.error(f"手机号登录流程出错: {e}", exc_info=e)
-            yield event.plain_result(f"❌ 登录流程出错: {e}")
+            yield event.plain_result(f"❌ 出错: {e}")
+            logger.error(f"登录流程出错: {e}", exc_info=e)
 
     # ==================== 指令: 手动签到 ====================
 
