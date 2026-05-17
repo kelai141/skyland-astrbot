@@ -404,159 +404,102 @@ class SklandSignPlugin(Star):
 
     @skland.command("login")
     async def login(self, event: AstrMessageEvent):
-        """通过手机号+验证码登录绑定
-
-        使用单层 session_waiter + 状态变量实现多步流程，
-        避免嵌套 session_waiter 导致的状态混乱。
-        """
+        """通过手机号+验证码登录绑定"""
         from .lib.skyland import api_post, LOGIN_CODE_URL, TOKEN_PHONE_CODE_URL, _get_login_header
         from astrbot.core.utils.session_waiter import session_waiter, SessionController
 
-        state = {"step": "phone", "phone": ""}
+        yield event.plain_result('📱 请输入你的手机号（发送"取消"取消）：')
 
-        yield event.plain_result('📱 请输入你的手机号（发送"取消"可取消操作）：')
+        phone = ""
 
-        @session_waiter(timeout=180)
-        async def login_handler(controller: SessionController, event: AstrMessageEvent):
-            # 立即阻止事件传播，防止 QQ 回显空消息进入 LLM 管道形成死循环
-            event.stop_event()
-
-            # 过滤 Bot 自身消息、空消息、指令消息
-            raw_text = event.message_str
-            text = raw_text.strip()
-            # 使用 print 直接输出到控制台（绕过 logging 层级问题）
-            print(f"[森空岛] 登录流程收到: step={state['step']} raw={repr(raw_text)} len={len(text)}")
-
-            # 空消息或太短的消息（如 Bot 自己被回显的提示语）直接忽略
-            if len(text) < 2:
-                print(f"[森空岛] 忽略短消息 (len={len(text)})")
+        @session_waiter(timeout=120)
+        async def wait_phone(controller: SessionController, event: AstrMessageEvent):
+            nonlocal phone
+            text = event.message_str.strip()
+            if not text:
                 return
 
-            # 指令消息
-            if text.startswith("/"):
-                await event.send(event.plain_result(
-                    "⚠️ 你正在手机号登录流程中，无法执行其他指令。\n"
-                    '如需退出请发送"取消"，完成当前流程后再使用其他指令。'))
+            phone = text.replace(" ", "").replace("-", "").replace("+86", "")
+            if not phone.isdigit() or len(phone) != 11:
+                await event.send(event.plain_result("⚠️ 手机号格式不正确，请输入11位手机号，如 13800138000："))
                 return
 
-            # Bot 自己的消息（部分 QQ 协议会把 Bot 消息回显）直接忽略
-            if hasattr(event, 'get_self_id') and event.get_self_id() == event.get_sender_id():
-                return
-
-            # 取消操作（任何步骤都支持）
-            if text == "取消":
-                print("[森空岛] 用户取消")
-                await event.send(event.plain_result("❌ 已取消绑定"))
+            # 发送验证码
+            try:
+                async with aiohttp.ClientSession() as session:
+                    resp = await api_post(session, LOGIN_CODE_URL,
+                                          json_data={'phone': phone, 'type': 2},
+                                          headers=_get_login_header())
+                    if resp.get("status") != 0:
+                        await event.send(event.plain_result(
+                            f"❌ {resp.get('msg', '发送验证码失败')}"))
+                        controller.stop()
+                        return
+            except Exception as e:
+                await event.send(event.plain_result(f"❌ 发送验证码出错: {e}"))
                 controller.stop()
                 return
 
-            if state["step"] == "phone":
-                # —— 步骤1：接收手机号 ——
-                phone = text.replace(" ", "").replace("-", "").replace("+86", "")
-                print(f"[森空岛] 手机号: 原始={repr(text)} 清洗={repr(phone)} isdigit={phone.isdigit()} len={len(phone)}")
-                if not phone.isdigit() or len(phone) != 11:
-                    print("[森空岛] 手机号校验失败")
-                    await event.send(event.plain_result("⚠️ 手机号格式不正确，请输入11位手机号，如 13800138000："))
-                    return  # 同一 session，继续等待
+            await event.send(event.plain_result('📱 验证码已发送，请输入6位验证码：'))
 
-                state["phone"] = phone
-
-                # 发送验证码
-                print(f"[森空岛] 发送验证码到 {phone[:3]}****{phone[-4:]}")
-                await event.send(event.plain_result("⏳ 正在发送验证码..."))
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        resp = await api_post(session, LOGIN_CODE_URL,
-                                              json_data={'phone': phone, 'type': 2},
-                                              headers=_get_login_header())
-                        print(f"[森空岛] 验证码API: status={resp.get('status')}")
-                        if resp.get("status") != 0:
-                            await event.send(event.plain_result(
-                                f"❌ 发送验证码失败: {resp.get('msg', '未知错误')}\n"
-                                "请稍后重试，或改用 /skland bind <token> 方式绑定。"))
-                            controller.stop()
-                            return
-                except Exception as e:
-                    err_text = str(e)
-                    if "dId" in err_text or "数美" in err_text:
-                        await event.send(event.plain_result(
-                            "⚠️ 设备指纹生成失败，请稍后重试。\n"
-                            "或者改用 /skland bind <token> 方式绑定。"))
-                    else:
-                        await event.send(event.plain_result(f"❌ 发送验证码出错: {err_text}"))
-                    controller.stop()
+            @session_waiter(timeout=120)
+            async def wait_code(controller2: SessionController, event2: AstrMessageEvent):
+                code = event2.message_str.strip()
+                if not code:
                     return
 
-                # 成功进入下一步
-                state["step"] = "code"
-                await event.send(event.plain_result('📱 验证码已发送，请输入6位验证码（发送"取消"可取消）：'))
-
-            elif state["step"] == "code":
-                # —— 步骤2：接收验证码 ——
-                code = text
-                print(f"[森空岛] 收到验证码: {repr(code)} isdigit={code.isdigit()} len={len(code)}")
                 if not code.isdigit() or len(code) != 6:
-                    print("[森空岛] 验证码校验失败")
-                    await event.send(event.plain_result("⚠️ 验证码格式不正确，请输入6位数字验证码："))
+                    await event2.send(event2.plain_result("⚠️ 验证码格式不正确，请输入6位数字："))
                     return
-
-                phone = state["phone"]
-                await event.send(event.plain_result("⏳ 正在验证..."))
 
                 try:
                     async with aiohttp.ClientSession() as session:
                         r = await api_post(session, TOKEN_PHONE_CODE_URL,
                                            json_data={"phone": phone, "code": code},
                                            headers=_get_login_header())
-                        print(f"[森空岛] 验证API: status={r.get('status')}")
                         if r.get("status") != 0:
-                            print(f"[森空岛] 验证失败: {r.get('msg')}")
-                            await event.send(event.plain_result(
-                                f"❌ 登录失败: {r.get('msg', '验证码错误，请重新输入')}"))
-                            # 重新回到验证码输入状态
-                            state["step"] = "code"
-                            await event.send(event.plain_result('请重新输入6位验证码（发送"取消"取消）：'))
+                            await event2.send(event2.plain_result(
+                                f"❌ 登录失败: {r.get('msg', '验证码错误')}"))
+                            controller2.stop()
                             return
-
                         token = r['data']['token']
-                        print("[森空岛] 获取 token 成功")
                 except Exception as e:
-                    print(f"[森空岛] 验证异常: {type(e).__name__}: {e}")
-                    await event.send(event.plain_result(f"❌ 登录出错: {e}"))
-                    controller.stop()
+                    await event2.send(event2.plain_result(f"❌ 登录出错: {e}"))
+                    controller2.stop()
                     return
 
-                # 验证 token 并绑定
-                print("[森空岛] 开始验证 token")
                 success, info, cred_resp = await verify_token(token)
-                print(f"[森空岛] token验证结果: success={success} info={info}")
                 if not success:
-                    await event.send(event.plain_result(f"❌ token 验证失败: {info}"))
-                    controller.stop()
+                    await event2.send(event2.plain_result(f"❌ token 验证失败: {info}"))
+                    controller2.stop()
                     return
 
-                sid = event.unified_msg_origin
-                self.data["users"][sid] = self._build_user_entry(sid, event, token, info, cred_resp)
+                sid = event2.unified_msg_origin
+                self.data["users"][sid] = self._build_user_entry(sid, event2, token, info, cred_resp)
                 self.data["stats"]["total_bindings"] = len(self.data["users"])
                 self._save_data()
                 self._start_auto_sign_loop()
 
-                await event.send(event.plain_result(
+                await event2.send(event2.plain_result(
                     f"✅ 绑定成功！🎉\n"
                     f"检测到角色：{info}\n\n"
                     f"📌 每天 09:05 将自动签到\n"
                     f"💪 现在发送 /skland sign 立即签到试试吧！"
                 ))
-                controller.stop()
+                controller2.stop()
+
+            try:
+                await wait_code(event)
+            except TimeoutError:
+                await event.send(event.plain_result("⏰ 验证码输入超时。"))
+            except Exception as e:
+                await event.send(event.plain_result(f"❌ 出错: {e}"))
 
         try:
-            print("[森空岛] 启动 session_waiter timeout=180s")
-            await login_handler(event)
+            await wait_phone(event)
         except TimeoutError:
-            print("[森空岛] session 超时")
-            yield event.plain_result("⏰ 操作超时，已取消。请重新发送 /skland login 重试。")
+            yield event.plain_result("⏰ 手机号输入超时。")
         except Exception as e:
-            print(f"[森空岛] 异常: {type(e).__name__}: {e}")
             yield event.plain_result(f"❌ 出错: {e}")
 
     # ==================== 指令: 手动签到 ====================
