@@ -418,19 +418,22 @@ class SklandSignPlugin(Star):
 
         @session_waiter(timeout=180)
         async def login_handler(controller: SessionController, event: AstrMessageEvent):
+            # 立即阻止事件传播，防止 QQ 回显空消息进入 LLM 管道形成死循环
+            event.stop_event()
+
             # 过滤 Bot 自身消息、空消息、指令消息
             raw_text = event.message_str
             text = raw_text.strip()
-            logger.info(f"[登录流程] 收到消息: step={state['step']} raw={repr(raw_text)} len={len(text)}")
+            # 使用 print 直接输出到控制台（绕过 logging 层级问题）
+            print(f"[森空岛] 登录流程收到: step={state['step']} raw={repr(raw_text)} len={len(text)}")
 
             # 空消息或太短的消息（如 Bot 自己被回显的提示语）直接忽略
             if len(text) < 2:
-                logger.info(f"[登录流程] 忽略短消息 (len={len(text)})")
+                print(f"[森空岛] 忽略短消息 (len={len(text)})")
                 return
 
             # 指令消息
             if text.startswith("/"):
-                logger.info(f"[登录流程] 忽略指令消息: {text}")
                 await event.send(event.plain_result(
                     "⚠️ 你正在手机号登录流程中，无法执行其他指令。\n"
                     '如需退出请发送"取消"，完成当前流程后再使用其他指令。'))
@@ -438,12 +441,11 @@ class SklandSignPlugin(Star):
 
             # Bot 自己的消息（部分 QQ 协议会把 Bot 消息回显）直接忽略
             if hasattr(event, 'get_self_id') and event.get_self_id() == event.get_sender_id():
-                logger.info(f"[登录流程] 忽略 Bot 自身回显消息")
                 return
 
             # 取消操作（任何步骤都支持）
             if text == "取消":
-                logger.info(f"[登录流程] 用户取消")
+                print("[森空岛] 用户取消")
                 await event.send(event.plain_result("❌ 已取消绑定"))
                 controller.stop()
                 return
@@ -451,23 +453,23 @@ class SklandSignPlugin(Star):
             if state["step"] == "phone":
                 # —— 步骤1：接收手机号 ——
                 phone = text.replace(" ", "").replace("-", "").replace("+86", "")
-                logger.info(f"[登录流程-手机] 原始={repr(text)} 清洗后={repr(phone)} isdigit={phone.isdigit()} len={len(phone)}")
+                print(f"[森空岛] 手机号: 原始={repr(text)} 清洗={repr(phone)} isdigit={phone.isdigit()} len={len(phone)}")
                 if not phone.isdigit() or len(phone) != 11:
-                    logger.warning(f"[登录流程-手机] 格式校验失败")
+                    print("[森空岛] 手机号校验失败")
                     await event.send(event.plain_result("⚠️ 手机号格式不正确，请输入11位手机号，如 13800138000："))
                     return  # 同一 session，继续等待
 
                 state["phone"] = phone
 
                 # 发送验证码
-                logger.info(f"[登录流程-手机] 发送验证码到 {phone[:3]}****{phone[-4:]}")
+                print(f"[森空岛] 发送验证码到 {phone[:3]}****{phone[-4:]}")
                 await event.send(event.plain_result("⏳ 正在发送验证码..."))
                 try:
                     async with aiohttp.ClientSession() as session:
                         resp = await api_post(session, LOGIN_CODE_URL,
                                               json_data={'phone': phone, 'type': 2},
                                               headers=_get_login_header())
-                        logger.info(f"[登录流程-验证码] API响应: status={resp.get('status')}")
+                        print(f"[森空岛] 验证码API: status={resp.get('status')}")
                         if resp.get("status") != 0:
                             await event.send(event.plain_result(
                                 f"❌ 发送验证码失败: {resp.get('msg', '未知错误')}\n"
@@ -492,9 +494,9 @@ class SklandSignPlugin(Star):
             elif state["step"] == "code":
                 # —— 步骤2：接收验证码 ——
                 code = text
-                logger.info(f"[登录流程-验证码] 收到={repr(code)} isdigit={code.isdigit()} len={len(code)}")
+                print(f"[森空岛] 收到验证码: {repr(code)} isdigit={code.isdigit()} len={len(code)}")
                 if not code.isdigit() or len(code) != 6:
-                    logger.warning(f"[登录流程-验证码] 格式校验失败")
+                    print("[森空岛] 验证码校验失败")
                     await event.send(event.plain_result("⚠️ 验证码格式不正确，请输入6位数字验证码："))
                     return
 
@@ -506,9 +508,9 @@ class SklandSignPlugin(Star):
                         r = await api_post(session, TOKEN_PHONE_CODE_URL,
                                            json_data={"phone": phone, "code": code},
                                            headers=_get_login_header())
-                        logger.info(f"[登录流程-验证] API响应: status={r.get('status')}")
+                        print(f"[森空岛] 验证API: status={r.get('status')}")
                         if r.get("status") != 0:
-                            logger.warning(f"[登录流程-验证] 登录失败: {r.get('msg')}")
+                            print(f"[森空岛] 验证失败: {r.get('msg')}")
                             await event.send(event.plain_result(
                                 f"❌ 登录失败: {r.get('msg', '验证码错误，请重新输入')}"))
                             # 重新回到验证码输入状态
@@ -517,17 +519,17 @@ class SklandSignPlugin(Star):
                             return
 
                         token = r['data']['token']
-                        logger.info(f"[登录流程-验证] 获取 token 成功")
+                        print("[森空岛] 获取 token 成功")
                 except Exception as e:
-                    logger.error(f"[登录流程-验证] 异常: {type(e).__name__}: {e}", exc_info=True)
+                    print(f"[森空岛] 验证异常: {type(e).__name__}: {e}")
                     await event.send(event.plain_result(f"❌ 登录出错: {e}"))
                     controller.stop()
                     return
 
                 # 验证 token 并绑定
-                logger.info(f"[登录流程-绑定] 开始验证 token")
+                print("[森空岛] 开始验证 token")
                 success, info, cred_resp = await verify_token(token)
-                logger.info(f"[登录流程-绑定] 结果: success={success} info={info}")
+                print(f"[森空岛] token验证结果: success={success} info={info}")
                 if not success:
                     await event.send(event.plain_result(f"❌ token 验证失败: {info}"))
                     controller.stop()
@@ -548,13 +550,13 @@ class SklandSignPlugin(Star):
                 controller.stop()
 
         try:
-            logger.info(f"[登录流程] 启动 session_waiter，timeout=180s")
+            print("[森空岛] 启动 session_waiter timeout=180s")
             await login_handler(event)
         except TimeoutError:
-            logger.info(f"[登录流程] ⏰ session 超时")
+            print("[森空岛] session 超时")
             yield event.plain_result("⏰ 操作超时，已取消。请重新发送 /skland login 重试。")
         except Exception as e:
-            logger.error(f"[登录流程] 异常: {type(e).__name__}: {e}", exc_info=True)
+            print(f"[森空岛] 异常: {type(e).__name__}: {e}")
             yield event.plain_result(f"❌ 出错: {e}")
 
     # ==================== 指令: 手动签到 ====================
