@@ -46,7 +46,7 @@ _OLD_DATA_BASE = Path(str(_DATA_BASE).replace("astrbot_plugin_skyland", "astrbot
 _OLD_DATA_FILE = str(_OLD_DATA_BASE / "users.json")
 
 
-@register("astrbot_plugin_skyland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理")
+@register("astrbot_plugin_skyland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理", "v1.0.0")
 class SklandSignPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
