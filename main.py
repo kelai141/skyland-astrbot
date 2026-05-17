@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 # 此目录在重启/重载后不会丢失
 try:
     from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-    _DATA_BASE = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_skland"
+    _DATA_BASE = Path(get_astrbot_data_path()) / "plugin_data" / "astrbot_plugin_skyland"
 except (ImportError, Exception):
     # 降级：兼容旧版本
-    _DATA_BASE = Path("data") / "plugin_data" / "astrbot_plugin_skland"
+    _DATA_BASE = Path("data") / "plugin_data" / "astrbot_plugin_skyland"
 
 _DATA_BASE.mkdir(parents=True, exist_ok=True)
 
@@ -42,8 +42,12 @@ _DATA_BASE.mkdir(parents=True, exist_ok=True)
 DATA_FILE = str(_DATA_BASE / "users.json")
 DATA_BACKUP_FILE = str(_DATA_BASE / "users.json.bak")
 
+# 旧路径（兼容旧版本插件名迁移）
+_OLD_DATA_BASE = Path(str(_DATA_BASE).replace("astrbot_plugin_skyland", "astrbot_plugin_skland"))
+_OLD_DATA_FILE = str(_OLD_DATA_BASE / "users.json")
 
-@register("astrbot_plugin_skland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理")
+
+@register("astrbot_plugin_skyland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理")
 class SklandSignPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -179,7 +183,16 @@ class SklandSignPlugin(Star):
         """加载用户数据
 
         如果主文件损坏，自动尝试从备份恢复。
+        如果检测到旧路径数据，自动迁移。
         """
+        # 自动迁移旧路径数据
+        if not os.path.exists(DATA_FILE) and os.path.exists(_OLD_DATA_FILE):
+            try:
+                shutil.copy2(_OLD_DATA_FILE, DATA_FILE)
+                logger.info(f"已从旧路径自动迁移数据: {_OLD_DATA_FILE} → {DATA_FILE}")
+            except Exception as e:
+                logger.warning(f"自动迁移旧数据失败: {e}")
+
         if os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
