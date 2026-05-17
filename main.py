@@ -10,6 +10,7 @@ import shutil
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import Plain
@@ -45,32 +46,64 @@ class SklandSignPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.data = self._load_data()
+        # 后台签到任务引用 —— 用于 terminate() 中取消，防止热重载残留
+        self._sign_task: Optional[asyncio.Task] = None
         self._task_started = False
-        # 如果已存在绑定用户，自动启动定时签到（应对重启/重载场景）
-        if self.data["users"]:
-            asyncio.create_task(self._start_auto_sign_loop())
 
-    # ==================== 插件生命周期 ====================
+    # ==================== 官方生命周期钩子 ====================
 
-    async def _start_auto_sign_loop(self):
-        """启动定时签到循环"""
+    async def initialize(self):
+        """
+        AstrBot 官方生命周期钩子。
+        插件实例化 + 事件绑定完成后自动调用。
+        在此处启动定时签到（而不是在 __init__ 中）。
+        """
+        if self.data["users"] and not self._task_started:
+            self._start_auto_sign_loop()
+
+    async def terminate(self):
+        """
+        AstrBot 官方生命周期钩子。
+        热重载 / 卸载前自动调用。
+        在此处取消后台签到任务，防止热重载后新旧两个循环同时运行。
+        """
+        if self._sign_task and not self._sign_task.done():
+            self._sign_task.cancel()
+            try:
+                await self._sign_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"取消签到任务时出现异常: {e}")
+            self._sign_task = None
+        self._task_started = False
+
+    # ==================== 定时签到管理 ====================
+
+    def _start_auto_sign_loop(self):
+        """启动定时签到循环（外部调用的总入口）"""
         if self._task_started:
             return
         self._task_started = True
-        asyncio.create_task(self._auto_sign_loop())
+        self._sign_task = asyncio.create_task(self._auto_sign_loop())
+        logger.info("自动签到循环已启动")
 
     async def _auto_sign_loop(self):
         """每日定时签到循环"""
-        while True:
-            now = datetime.now()
-            # 计算下一次签到时间：每天 09:05（给一点余量）
-            target = now.replace(hour=9, minute=5, second=0, microsecond=0)
-            if target <= now:
-                target += timedelta(days=1)
-            wait_seconds = (target - now).total_seconds()
-            logger.info(f"下次自动签到时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {wait_seconds:.0f} 秒)")
-            await asyncio.sleep(wait_seconds)
-            await self._auto_sign_all()
+        try:
+            while True:
+                now = datetime.now()
+                # 计算下一次签到时间：每天 09:05（给一点余量）
+                target = now.replace(hour=9, minute=5, second=0, microsecond=0)
+                if target <= now:
+                    target += timedelta(days=1)
+                wait_seconds = (target - now).total_seconds()
+                logger.info(f"下次自动签到时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {wait_seconds:.0f} 秒)")
+                await asyncio.sleep(wait_seconds)
+                await self._auto_sign_all()
+        except asyncio.CancelledError:
+            logger.info("自动签到循环已被取消（热重载/卸载）")
+            raise  # 必须重新抛出，让 asyncio 知道任务已被取消
 
     async def _auto_sign_all(self):
         """为所有已绑定用户自动签到"""
@@ -305,7 +338,7 @@ class SklandSignPlugin(Star):
         self._save_data()
 
         # 注册自动签到（如果尚未启动）
-        await self._start_auto_sign_loop()
+        self._start_auto_sign_loop()
 
         yield event.plain_result(
             f"✅ 绑定成功！🎉\n"
@@ -396,7 +429,7 @@ class SklandSignPlugin(Star):
                     self.data["users"][sid] = self._build_user_entry(sid, event, token, info, cred_resp)
                     self.data["stats"]["total_bindings"] = len(self.data["users"])
                     self._save_data()
-                    await self._start_auto_sign_loop()
+                    self._start_auto_sign_loop()
 
                     await event.send(event.plain_result(
                         f"✅ 绑定成功！🎉\n"
