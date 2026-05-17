@@ -14,8 +14,7 @@ from typing import Optional
 
 import aiohttp
 
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.message_components import Plain
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 
 from .lib.skyland import (
@@ -153,9 +152,10 @@ class SklandSignPlugin(Star):
         cred_cred = info.get("cred_cred", "")
         cred_token = info.get("cred_token", "")
 
-        # 如果 cred 或 token 不完整，重新获取凭证对
-        if not cred_cred or not cred_token:
-            async with aiohttp.ClientSession() as session:
+        # 复用同一个 aiohttp 会话，避免重复创建连接
+        async with aiohttp.ClientSession() as session:
+            # 如果 cred 或 token 不完整，重新获取凭证对
+            if not cred_cred or not cred_token:
                 cred_resp = await get_cred_by_token(session, token)
                 cred_cred = cred_resp.get("cred", "")
                 cred_token = cred_resp.get("token", "")
@@ -163,17 +163,20 @@ class SklandSignPlugin(Star):
                 info["cred_token"] = cred_token
                 self._save_data()
 
-        async with aiohttp.ClientSession() as session:
             return await do_sign(session, token, cred_cred)
 
     async def _notify_user(self, info: dict, message: str):
-        """向用户推送消息"""
+        """向用户推送消息
+
+        使用 AstrBot 官方推荐的 MessageChain 构建主动消息。
+        """
         target = info.get("notify_target")
         if not target:
             logger.warning(f"用户 {info.get('sender_id')} 没有通知目标，跳过推送")
             return
         try:
-            await self.context.send_message(target, [Plain(message)])
+            chain = MessageChain().message(message)
+            await self.context.send_message(target, chain)
         except Exception as e:
             logger.error(f"推送消息失败: {e}")
 
@@ -281,9 +284,14 @@ class SklandSignPlugin(Star):
             "notify_target": sid,
         }
 
-    # ==================== 指令: 帮助 ====================
+    # ==================== 指令系统（command_group 模式） ====================
 
-    @filter.command("skland help")
+    @filter.command_group("skland")
+    def skland():
+        """/skland 指令组"""
+        pass
+
+    @skland.command("help")
     async def help(self, event: AstrMessageEvent):
         """显示帮助信息"""
         yield event.plain_result(
@@ -308,7 +316,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 绑定 ====================
 
-    @filter.command("skland bind")
+    @skland.command("bind")
     async def bind(self, event: AstrMessageEvent, token: str = None):
         """绑定鹰角通行证 token"""
         if not token:
@@ -357,7 +365,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 手机号登录 ====================
 
-    @filter.command("skland login")
+    @skland.command("login")
     async def login(self, event: AstrMessageEvent):
         """通过手机号+验证码登录绑定"""
         from .lib.skyland import api_post, LOGIN_CODE_URL, TOKEN_PHONE_CODE_URL, _get_login_header
@@ -380,7 +388,6 @@ class SklandSignPlugin(Star):
 
                 # 发送验证码
                 try:
-                    import aiohttp
                     async with aiohttp.ClientSession() as session:
                         resp = await api_post(session, LOGIN_CODE_URL,
                                               json_data={'phone': phone, 'type': 2},
@@ -406,7 +413,6 @@ class SklandSignPlugin(Star):
 
                     # 用验证码登录
                     try:
-                        import aiohttp
                         async with aiohttp.ClientSession() as session:
                             r = await api_post(session, TOKEN_PHONE_CODE_URL,
                                                json_data={"phone": phone, "code": code},
@@ -467,7 +473,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 手动签到 ====================
 
-    @filter.command("skland sign")
+    @skland.command("sign")
     async def sign(self, event: AstrMessageEvent):
         """手动立即签到"""
         sid = self._get_sender_id(event)
@@ -506,7 +512,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 查看状态 ====================
 
-    @filter.command("skland status")
+    @skland.command("status")
     async def status(self, event: AstrMessageEvent):
         """查看签到状态"""
         sid = self._get_sender_id(event)
@@ -534,7 +540,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 解绑 ====================
 
-    @filter.command("skland unbind")
+    @skland.command("unbind")
     async def unbind(self, event: AstrMessageEvent):
         """解绑账号（需要确认）"""
         sid = self._get_sender_id(event)
@@ -574,7 +580,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 管理员 - 查看所有用户 ====================
 
-    @filter.command("skland list")
+    @skland.command("list")
     async def list_users(self, event: AstrMessageEvent):
         """管理员查看所有已绑定用户"""
         if not self._is_admin(event):
@@ -598,7 +604,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 管理员 - 移除用户 ====================
 
-    @filter.command("skland remove")
+    @skland.command("remove")
     async def remove_user(self, event: AstrMessageEvent, user_id: str = None):
         """管理员移除指定用户的绑定"""
         if not self._is_admin(event):
@@ -621,7 +627,7 @@ class SklandSignPlugin(Star):
 
     # ==================== 指令: 管理员 - 群发 ====================
 
-    @filter.command("skland broadcast")
+    @skland.command("broadcast")
     async def broadcast(self, event: AstrMessageEvent):
         """管理员向所有绑定用户群发消息"""
         if not self._is_admin(event):
