@@ -96,6 +96,12 @@ astrbot_plugin_skyland/
 
 ## 📝 变更日志
 
+### v1.2.0 (2026-05-18)
+- 📋 **日志规范化**：全部切换为 `astrbot.api.logger`，日志直接输出到 AstrBot 后台
+- 🔍 **全链路详细日志**：`verify_token` → `get_cred_by_token` → `get_binding_list` 每步均有 INFO 日志
+- 🐛 **改进异常消息**：失败时附带 `code`、异常类型、原始响应摘要，方便后台排查
+- 🛡️ **JSON 解析保护**：`api_get`/`api_post` 对非 JSON 响应做保护性处理
+
 ### v1.1.0 (2026-05-18)
 - 🔧 **修复**：签名请求头补全 `dId` 字段，与原始 skyland-auto-sign 完全一致
 - 🔧 **修复**：`/skland broadcast` 命令正确提取消息内容

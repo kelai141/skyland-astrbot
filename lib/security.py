@@ -9,7 +9,6 @@ import base64
 import gzip
 import hashlib
 import json
-import logging
 import os
 import time
 import uuid
@@ -23,7 +22,12 @@ from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
 from cryptography.hazmat.primitives.ciphers.base import Cipher
 from cryptography.hazmat.primitives.ciphers.modes import CBC, ECB
 
-logger = logging.getLogger(__name__)
+# AstrBot 官方日志接口（后台可见），降级使用标准 logging
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 # 查询dId请求头
 devices_info_url = "https://fp-it.portal101.cn/deviceprofile/v4"

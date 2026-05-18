@@ -4,7 +4,6 @@
 """
 import asyncio
 import json
-import logging
 import os
 import shutil
 import tempfile
@@ -16,6 +15,7 @@ import aiohttp
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
 
 from .lib.skyland import (
     do_sign,
@@ -23,8 +23,6 @@ from .lib.skyland import (
     parse_user_token,
     verify_token,
 )
-
-logger = logging.getLogger(__name__)
 
 # 使用 AstrBot 官方推荐的插件数据目录
 # 此目录在重启/重载后不会丢失
@@ -46,7 +44,7 @@ _OLD_DATA_BASE = Path(str(_DATA_BASE).replace("astrbot_plugin_skyland", "astrbot
 _OLD_DATA_FILE = str(_OLD_DATA_BASE / "users.json")
 
 
-@register("astrbot_plugin_skyland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理", "v1.1.0")
+@register("astrbot_plugin_skyland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理", "v1.2.0")
 class SklandSignPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -373,12 +371,15 @@ class SklandSignPlugin(Star):
 
         # 先验证 token
         yield event.plain_result("⏳ 正在验证 token 有效性...")
+        logger.info(f"[绑定] 用户 {sid} token 长度={len(token)}，开始验证…")
 
         try:
             token = parse_user_token(token)
+            logger.info(f"[绑定] token 解析完成，调用 verify_token …")
             success, info, cred_resp = await verify_token(token)
         except Exception as e:
-            yield event.plain_result(f"❌ token 验证过程出错: {e}")
+            logger.error(f"[绑定] 用户 {sid} token 验证异常: {type(e).__name__}: {e}")
+            yield event.plain_result(f"❌ token 验证过程出错: {e}\n请检查 token 是否正确，如持续失败请反馈后台日志。")
             return
 
         if not success:
@@ -517,6 +518,7 @@ class SklandSignPlugin(Star):
             return
 
         info = self.data["users"][sid]
+        logger.info(f"[签到] 用户 {sid} 手动签到请求，角色: {info.get('game_info', '未知')}")
         yield event.plain_result("⏳ 正在签到，请稍候...")
 
         try:

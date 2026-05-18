@@ -11,7 +11,6 @@
 import hashlib
 import hmac
 import json
-import logging
 import time
 from typing import Optional
 from urllib import parse
@@ -20,7 +19,8 @@ import aiohttp
 
 from .security import get_d_id
 
-logger = logging.getLogger(__name__)
+# AstrBot 官方日志接口（后台可见）
+from astrbot.api import logger
 
 # 常量
 APP_CODE = '4ca99fa6b56cc2ba'
@@ -120,36 +120,19 @@ def get_sign_header(url: str, method: str, body: Optional[dict], h: dict, token:
 
 async def api_post(session: aiohttp.ClientSession, url: str, json_data: dict = None,
                    headers: dict = None) -> dict:
-    """异步 POST 请求（带日志）"""
+    """异步 POST 请求（带详细日志）"""
     import time as _time
     start = _time.time()
     logger.info(f"🔗 POST {url}")
     try:
         async with session.post(url, json=json_data, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            result = await resp.json()
+            raw_text = await resp.text()
             elapsed = (_time.time() - start) * 1000
-            status = result.get('status') or result.get('code')
-            if status != 0:
-                logger.warning(f"  ⚠️ [{resp.status}] {elapsed:.0f}ms → status={status} msg={result.get('message') or result.get('msg', result)}")
-            else:
-                logger.info(f"  ✅ [{resp.status}] {elapsed:.0f}ms")
-            return result
-    except Exception as e:
-        elapsed = (_time.time() - start) * 1000
-        logger.error(f"  ❌ {elapsed:.0f}ms → {type(e).__name__}: {e}")
-        raise
-
-
-async def api_get(session: aiohttp.ClientSession, url: str,
-                  headers: dict = None) -> dict:
-    """异步 GET 请求（带日志）"""
-    import time as _time
-    start = _time.time()
-    logger.info(f"🔗 GET {url}")
-    try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            result = await resp.json()
-            elapsed = (_time.time() - start) * 1000
+            try:
+                result = json.loads(raw_text)
+            except json.JSONDecodeError:
+                logger.error(f"  ❌ [{resp.status}] {elapsed:.0f}ms → JSON解析失败，原始响应: {raw_text[:500]}")
+                raise Exception(f"API返回非JSON数据 (HTTP {resp.status}): {raw_text[:200]}")
             status = result.get('status') or result.get('code')
             if status not in (0, None):
                 logger.warning(f"  ⚠️ [{resp.status}] {elapsed:.0f}ms → status={status} msg={result.get('message') or result.get('msg', result)}")
@@ -158,7 +141,34 @@ async def api_get(session: aiohttp.ClientSession, url: str,
             return result
     except Exception as e:
         elapsed = (_time.time() - start) * 1000
-        logger.error(f"  ❌ {elapsed:.0f}ms → {type(e).__name__}: {e}")
+        logger.error(f"  ❌ POST {url} → {elapsed:.0f}ms → {type(e).__name__}: {e}")
+        raise
+
+
+async def api_get(session: aiohttp.ClientSession, url: str,
+                  headers: dict = None) -> dict:
+    """异步 GET 请求（带详细日志）"""
+    import time as _time
+    start = _time.time()
+    logger.info(f"🔗 GET {url}")
+    try:
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            raw_text = await resp.text()
+            elapsed = (_time.time() - start) * 1000
+            try:
+                result = json.loads(raw_text)
+            except json.JSONDecodeError:
+                logger.error(f"  ❌ [{resp.status}] {elapsed:.0f}ms → JSON解析失败，原始响应: {raw_text[:500]}")
+                raise Exception(f"API返回非JSON数据 (HTTP {resp.status}): {raw_text[:200]}")
+            status = result.get('status') or result.get('code')
+            if status not in (0, None):
+                logger.warning(f"  ⚠️ [{resp.status}] {elapsed:.0f}ms → status={status} msg={result.get('message') or result.get('msg', result)}")
+            else:
+                logger.info(f"  ✅ [{resp.status}] {elapsed:.0f}ms")
+            return result
+    except Exception as e:
+        elapsed = (_time.time() - start) * 1000
+        logger.error(f"  ❌ GET {url} → {elapsed:.0f}ms → {type(e).__name__}: {e}")
         raise
 
 
@@ -174,6 +184,7 @@ def parse_user_token(t: str) -> str:
 
 async def get_grant_code(session: aiohttp.ClientSession, token: str) -> str:
     """用 token 换取 grant_code"""
+    logger.info("[凭证] 步骤1/2: 用 token 换取 grant_code …")
     resp = await api_post(session, GRANT_CODE_URL, json_data={
         'appCode': APP_CODE,
         'token': token,
@@ -181,22 +192,27 @@ async def get_grant_code(session: aiohttp.ClientSession, token: str) -> str:
     }, headers=_get_login_header())
     if resp.get('status') != 0:
         raise Exception(f'获取认证代码失败: {resp.get("msg", resp)}')
-    return resp['data']['code']
+    code = resp['data']['code']
+    logger.info(f"[凭证] grant_code 获取成功: {code[:8]}…")
+    return code
 
 
 async def get_cred(session: aiohttp.ClientSession, grant: str) -> dict:
     """用 grant_code 换取 cred"""
+    logger.info("[凭证] 步骤2/2: 用 grant_code 换取 cred …")
     resp = await api_post(session, CRED_CODE_URL, json_data={
         'code': grant,
         'kind': 1
     }, headers=_get_login_header())
     if resp.get('code') != 0:
         raise Exception(f'获取 cred 失败: {resp.get("message", resp)}')
+    logger.info("[凭证] cred 获取成功")
     return resp['data']
 
 
 async def get_cred_by_token(session: aiohttp.ClientSession, token: str) -> dict:
     """完整流程：token → grant_code → cred"""
+    logger.info(f"[凭证] 开始完整鉴权流程…")
     grant_code = await get_grant_code(session, token)
     return await get_cred(session, grant_code)
 
@@ -214,21 +230,35 @@ async def refresh_token(session: aiohttp.ClientSession, token: str, cred: str) -
 
 async def get_binding_list(session: aiohttp.ClientSession, token: str, cred: str) -> list:
     """获取已绑定的游戏角色列表"""
+    logger.info("[角色] 正在获取已绑定角色列表…")
     headers = HEADER.copy()
     headers['cred'] = cred
     headers = get_sign_header(BINDING_URL, 'get', None, headers, token)
 
     resp = await api_get(session, BINDING_URL, headers=headers)
-    if resp.get('code') != 0:
-        raise Exception(f'获取角色列表失败: {resp.get("message", resp)}')
+    code = resp.get('code')
+    if code != 0:
+        msg = resp.get('message', '未知错误')
+        # 附带响应体摘要，方便后台排查
+        logger.error(f"[角色] 获取角色列表失败 → code={code} message={msg} | 原始响应: {json.dumps(resp, ensure_ascii=False)[:500]}")
+        raise Exception(f'获取角色列表失败: {msg} (code={code})')
+
+    games = resp.get('data', {}).get('list', [])
+    logger.info(f"[角色] 返回 {len(games)} 个游戏条目")
 
     characters = []
-    for game in resp['data']['list']:
-        if game.get('appCode') not in ('arknights', 'endfield'):
+    for game in games:
+        app_code = game.get('appCode', '')
+        if app_code not in ('arknights', 'endfield'):
+            logger.debug(f"[角色] 跳过不支持的appCode: {app_code}")
             continue
-        for char in game.get('bindingList', []):
-            char['appCode'] = game['appCode']
+        bindings = game.get('bindingList', [])
+        for char in bindings:
+            char['appCode'] = app_code
             characters.append(char)
+        logger.info(f"[角色] {app_code}: 找到 {len(bindings)} 个角色")
+
+    logger.info(f"[角色] 共找到 {len(characters)} 个可签到角色")
     return characters
 
 
@@ -312,11 +342,13 @@ async def do_sign(session: aiohttp.ClientSession, token: str, cred: str) -> list
     Returns:
         签到结果消息列表
     """
+    logger.info("[签到] 开始签到流程 …")
     characters = await get_binding_list(session, token, cred)
     logs = []
 
     for char in characters:
         app_code = char['appCode']
+        game_name = char.get('gameName', '未知')
         try:
             if app_code == 'arknights':
                 msg = await sign_for_arknights(session, token, cred, char)
@@ -324,12 +356,13 @@ async def do_sign(session: aiohttp.ClientSession, token: str, cred: str) -> list
             elif app_code == 'endfield':
                 msgs = await sign_for_endfield(session, token, cred, char)
                 logs.extend(msgs)
-            logger.info(msg if isinstance(msg, str) else str(msgs))
+            logger.info(f"[签到] {game_name}: {msg if isinstance(msg, str) else str(msgs)}")
         except Exception as e:
-            err_msg = f'❌ [{char.get("gameName", "未知")}] 签到异常: {e}'
+            err_msg = f'❌ [{game_name}] 签到异常: {e}'
             logs.append(err_msg)
-            logger.error(err_msg, exc_info=e)
+            logger.error(f"[签到] {err_msg}", exc_info=e)
 
+    logger.info(f"[签到] 流程完成，共处理 {len(characters)} 个角色")
     return logs
 
 
@@ -340,17 +373,31 @@ async def verify_token(token: str) -> tuple[bool, str, Optional[dict]]:
     Returns:
         (是否成功, 消息, cred_response 或 None)
     """
+    logger.info("=" * 50)
+    logger.info("[验证] 开始验证 token …")
+
+    # Step 0: 解析可能的 JSON 格式 token
     try:
-        # 对可能来自控制台的 JSON 格式 token 做解析
+        raw_len = len(token)
         token = parse_user_token(token)
+        if len(token) != raw_len:
+            logger.info(f"[验证] token 已从 JSON 格式解析 (原始{raw_len}字符 → {len(token)}字符)")
     except Exception:
         pass
 
+    # Step 1: 获取凭证
     try:
+        logger.info("[验证] 步骤1: 获取凭证 (token → cred) …")
         async with aiohttp.ClientSession() as session:
             cred_resp = await get_cred_by_token(session, token)
-            characters = await get_binding_list(session, token, cred_resp.get('cred', ''))
+            logger.info("[验证] 凭证获取成功")
 
+            # Step 2: 获取角色列表
+            logger.info("[验证] 步骤2: 获取角色列表 …")
+            characters = await get_binding_list(session, token, cred_resp.get('cred', ''))
+            logger.info(f"[验证] 获取到 {len(characters)} 个角色")
+
+            # Step 3: 组装结果
             game_info = []
             for char in characters:
                 game_name = char.get('gameName', '')
@@ -359,7 +406,11 @@ async def verify_token(token: str) -> tuple[bool, str, Optional[dict]]:
                 game_info.append(f'{game_name}({nickname}@{channel})')
 
             info = '、'.join(game_info) if game_info else '未检测到可签到的游戏角色'
+            logger.info(f"[验证] ✅ 验证成功！角色: {info}")
+            logger.info("=" * 50)
             return True, info, cred_resp
 
     except Exception as e:
+        logger.error(f"[验证] ❌ 验证失败: {type(e).__name__}: {e}")
+        logger.info("=" * 50)
         return False, f'验证失败: {e}', None
