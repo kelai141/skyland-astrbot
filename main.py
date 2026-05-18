@@ -107,55 +107,47 @@ class SklandSignPlugin(Star):
         logger.info("自动签到循环已启动")
 
     async def _auto_sign_loop(self):
-        """每日定时签到循环"""
+        """每分钟检查是否有用户需要签到（支持每用户独立签到时间）"""
         try:
+            # 首次启动等 5 秒让插件完全初始化
+            await asyncio.sleep(5)
             while True:
                 now = datetime.now()
-                # 从配置读取签到时间，默认 09:05
-                sign_time_str = self.data["stats"].get("sign_time", "09:05")
-                try:
-                    h, m = map(int, sign_time_str.split(":"))
-                except (ValueError, AttributeError):
-                    h, m = 9, 5
-                    self.data["stats"]["sign_time"] = "09:05"
+                current_time = now.strftime("%H:%M")
+                today = date.today().isoformat()
 
-                target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-                if target <= now:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                logger.info(f"下次自动签到时间: {target.strftime('%Y-%m-%d %H:%M:%S')} (等待 {wait_seconds:.0f} 秒)")
-                await asyncio.sleep(wait_seconds)
-                await self._auto_sign_all()
+                # 找出当前时间需要签到且今日未签的用户
+                due_users = []
+                for sid, info in self.data["users"].items():
+                    user_time = info.get("sign_time", "09:05")
+                    if user_time == current_time:
+                        if info.get("last_sign_date") != today or not info.get("last_sign_result", "").startswith("✅"):
+                            due_users.append((sid, info))
+
+                if due_users:
+                    logger.info(f"[{current_time}] 触发签到，{len(due_users)} 个用户")
+                    await self._auto_sign_batch(due_users)
+
+                # 等待到下一分钟
+                next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+                await asyncio.sleep((next_minute - datetime.now()).total_seconds() + 0.5)
         except asyncio.CancelledError:
             logger.info("自动签到循环已被取消（热重载/卸载）")
-            raise  # 必须重新抛出，让 asyncio 知道任务已被取消
+            raise
 
-    async def _auto_sign_all(self):
-        """为所有已绑定用户自动签到（批量处理，连接复用，原子保存）"""
+    async def _auto_sign_batch(self, users: list):
+        """为一批用户执行签到（连接复用，批量保存）"""
         today = date.today().isoformat()
-        users = list(self.data["users"].items())
-        if not users:
-            logger.info("没有已绑定的用户，跳过自动签到")
-            return
-
-        logger.info(f"开始自动签到，共 {len(users)} 个用户")
         saved = False
 
-        # 共享 aiohttp 会话（连接池复用，减少 TCP 握手）
         connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
         async with aiohttp.ClientSession(connector=connector) as session:
             for sender_id, info in users:
-                if info.get("last_sign_date") == today and info.get("last_sign_result", "").startswith("✅"):
-                    logger.info(f"用户 {sender_id} 今日已签到，跳过")
-                    continue
-
                 try:
                     result = await self._sign_for_user_with_session(session, sender_id, info)
                     info["last_sign_date"] = today
                     info["last_sign_result"] = "✅ " + " | ".join(result) if result else "✅ 签到完成（无奖励）"
                     saved = True
-
-                    # 推送结果（push_enabled 检查在 _notify_user 内部）
                     await self._notify_user(info, f"🌠 森空岛自动签到\n📅 {today}\n" + "\n".join(result))
                     logger.info(f"用户 {sender_id} 签到成功")
                 except Exception as e:
@@ -166,14 +158,12 @@ class SklandSignPlugin(Star):
                     await self._notify_user(info, f"🌠 森空岛自动签到\n📅 {today}\n{err_msg}")
                     logger.error(f"用户 {sender_id} 签到失败: {e}", exc_info=e)
 
-                # 每个用户间隔 3-5s 随机延迟，防限流/风控
                 await asyncio.sleep(3 + (hash(sender_id) % 3))
 
-        # 批量结束后统一保存（仅一次磁盘写入）
         if saved:
             self.data["stats"]["last_auto_sign"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._save_data()
-        logger.info("自动签到完成")
+        logger.info(f"批量签到完成 ({len(users)} 用户)")
 
     async def _sign_for_user_with_session(self, session: aiohttp.ClientSession,
                                             sender_id: str, info: dict) -> list:
@@ -281,7 +271,6 @@ class SklandSignPlugin(Star):
             "stats": {
                 "total_bindings": 0,
                 "last_auto_sign": None,
-                "sign_time": "09:05",  # 默认早上 9:05
             }
         }
 
@@ -337,6 +326,7 @@ class SklandSignPlugin(Star):
             "notify_target": sid,
             "bound_in_private": not bool(event.get_group_id()),
             "push_enabled": True,  # 初始默认开启
+            "sign_time": "09:05",  # 每用户独立签到时间
         }
 
     # ==================== 指令系统（command_group 模式） ====================
@@ -615,36 +605,35 @@ class SklandSignPlugin(Star):
 
     @skland.command("time")
     async def time_config(self, event: AstrMessageEvent, action: str = None, arg: str = None):
-        """查看或设置自动签到时间（仅管理员）"""
-        if not self._is_admin(event):
-            yield event.plain_result("❌ 仅管理员可设置签到时间")
+        """查看或设置自己的自动签到时间"""
+        sid = self._get_sender_id(event)
+
+        if sid not in self.data["users"]:
+            yield event.plain_result("❌ 你还没有绑定账号！")
             return
 
         if action == "set" and arg:
-            # 验证时间格式
             try:
                 parts = arg.split(":")
                 h, m = int(parts[0]), int(parts[1])
                 if not (0 <= h <= 23 and 0 <= m <= 59):
                     raise ValueError
             except (ValueError, IndexError):
-                yield event.plain_result("❌ 时间格式错误，请使用 HH:MM 格式\n例如: /skland time set 09:05")
+                yield event.plain_result("❌ 时间格式错误，请使用 HH:MM\n例如: /skland time set 06:30")
                 return
 
-            old_time = self.data["stats"].get("sign_time", "09:05")
-            self.data["stats"]["sign_time"] = arg
+            old_time = self.data["users"][sid].get("sign_time", "09:05")
+            self.data["users"][sid]["sign_time"] = arg
             self._save_data()
-            yield event.plain_result(f"⏰ 签到时间已更新: {old_time} → {arg}\n\n⚠️ 需要热重载插件才能生效。")
-            logger.info(f"签到时间变更: {old_time} → {arg}")
+            yield event.plain_result(f"⏰ 你的签到时间已更新: {old_time} → {arg}")
+            logger.info(f"用户 {sid} 签到时间: {old_time} → {arg}")
 
         else:
-            sign_time = self.data["stats"].get("sign_time", "09:05")
+            sign_time = self.data["users"][sid].get("sign_time", "09:05")
             yield event.plain_result(
-                f"⏰ 当前自动签到时间: {sign_time}\n\n"
+                f"⏰ 你的自动签到时间: {sign_time}\n\n"
                 f"修改: /skland time set HH:MM\n"
-                f"例如: /skland time set 06:30（早上六点半）\n"
-                f"      /skland time set 22:30（晚上十点半）\n\n"
-                f"⚠️ 修改后需热重载插件生效。"
+                f"例如: /skland time set 06:30"
             )
 
     # ==================== 指令: 查看状态 ====================
