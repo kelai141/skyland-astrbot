@@ -157,7 +157,7 @@ class SklandSignPlugin(Star):
                     logger.info(f"用户 {sender_id} 签到成功")
                 except Exception as e:
                     err_msg = f"❌ 签到失败: {e}"
-                    info["last_sign_date"] = today
+                    # 失败不更新 last_sign_date，下一分钟重试
                     info["last_sign_result"] = err_msg
                     saved = True
                     await self._notify_user(info, f"🌠 森空岛自动签到\n📅 {today}\n{err_msg}")
@@ -655,7 +655,8 @@ class SklandSignPlugin(Star):
 
         info = self.data["users"][sid]
         today = date.today().isoformat()
-        is_signed_today = info.get("last_sign_date") == today
+        is_signed_today = (info.get("last_sign_date") == today and
+                          info.get("last_sign_result", "").startswith("✅"))
         result = info.get("last_sign_result", "暂无记录")
 
         yield event.plain_result(
