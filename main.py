@@ -170,8 +170,8 @@ class SklandSignPlugin(Star):
         logger.info(f"批量签到完成 ({len(users)} 用户)")
 
     async def _sign_for_user_with_session(self, session: aiohttp.ClientSession,
-                                            sender_id: str, info: dict) -> list:
-        """为单个用户执行签到（复用外部 session）"""
+                                            sender_id: str, info: dict, retry: bool = True) -> list:
+        """为单个用户执行签到（复用外部 session，凭据过期自动刷新重试）"""
         token = info.get("token", "")
         cred_cred = info.get("cred_cred", "")
         cred_token = info.get("cred_token", "")
@@ -183,26 +183,28 @@ class SklandSignPlugin(Star):
             info["cred_cred"] = cred_cred
             info["cred_token"] = cred_token
 
-        return await do_sign(session, cred_token, cred_cred)
+        try:
+            return await do_sign(session, cred_token, cred_cred)
+        except Exception as e:
+            # 凭据过期/失效时自动刷新并重试一次
+            if retry and "10000" in str(e):
+                logger.warning(f"用户 {sender_id} 凭据可能过期，自动刷新… ({e})")
+                try:
+                    cred_resp = await get_cred_by_token(session, token)
+                    cred_cred = cred_resp.get("cred", "")
+                    cred_token = cred_resp.get("token", "")
+                    info["cred_cred"] = cred_cred
+                    info["cred_token"] = cred_token
+                    return await do_sign(session, cred_token, cred_cred)
+                except Exception as e2:
+                    logger.error(f"用户 {sender_id} 刷新凭据后仍失败: {e2}")
+                    raise e2
+            raise
 
     async def _sign_for_user(self, sender_id: str, info: dict) -> list:
-        """为单个用户执行签到"""
-        token = info.get("token", "")
-        cred_cred = info.get("cred_cred", "")
-        cred_token = info.get("cred_token", "")
-
-        # 复用同一个 aiohttp 会话，避免重复创建连接
+        """为单个用户执行签到（创建新会话）"""
         async with aiohttp.ClientSession() as session:
-            # 如果 cred 或 token 不完整，重新获取凭证对
-            if not cred_cred or not cred_token:
-                cred_resp = await get_cred_by_token(session, token)
-                cred_cred = cred_resp.get("cred", "")
-                cred_token = cred_resp.get("token", "")
-                info["cred_cred"] = cred_cred
-                info["cred_token"] = cred_token
-                self._save_data()
-
-            return await do_sign(session, cred_token, cred_cred)
+            return await self._sign_for_user_with_session(session, sender_id, info)
 
     async def _notify_user(self, info: dict, message: str):
         """向用户推送消息（需私聊绑定 + push 开关开启）
