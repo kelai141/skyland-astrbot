@@ -113,24 +113,29 @@ class SklandSignPlugin(Star):
             await asyncio.sleep(5)
             while True:
                 now = datetime.now()
-                current_time = now.strftime("%H:%M")
+                # 用整数比较，避免 "9:05" vs "09:05" 格式不匹配
+                current_h, current_m = now.hour, now.minute
                 today = date.today().isoformat()
 
                 # 找出当前时间需要签到且今日未签的用户
                 due_users = []
                 for sid, info in self.data["users"].items():
                     user_time = info.get("sign_time", "09:05")
-                    if user_time == current_time:
+                    try:
+                        uh, um = map(int, user_time.split(":"))
+                    except (ValueError, AttributeError):
+                        uh, um = 9, 5
+                    if uh == current_h and um == current_m:
                         if info.get("last_sign_date") != today or not info.get("last_sign_result", "").startswith("✅"):
                             due_users.append((sid, info))
 
                 if due_users:
-                    logger.info(f"[{current_time}] 触发签到，{len(due_users)} 个用户")
+                    logger.info(f"[{current_h:02d}:{current_m:02d}] 触发签到，{len(due_users)} 个用户")
                     await self._auto_sign_batch(due_users)
 
-                # 等待到下一分钟
-                next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-                await asyncio.sleep((next_minute - datetime.now()).total_seconds() + 0.5)
+                # 等待到下一分钟（重新取时间，避免批量耗时导致跳分钟）
+                sleep_sec = 60 - datetime.now().second + 0.5
+                await asyncio.sleep(sleep_sec)
         except asyncio.CancelledError:
             logger.info("自动签到循环已被取消（热重载/卸载）")
             raise
@@ -622,10 +627,11 @@ class SklandSignPlugin(Star):
                 yield event.plain_result("❌ 时间格式错误，请使用 HH:MM\n例如: /skland time set 06:30")
                 return
 
+            new_time = f"{h:02d}:{m:02d}"  # 归一化为零填充格式
             old_time = self.data["users"][sid].get("sign_time", "09:05")
-            self.data["users"][sid]["sign_time"] = arg
+            self.data["users"][sid]["sign_time"] = new_time
             self._save_data()
-            yield event.plain_result(f"⏰ 你的签到时间已更新: {old_time} → {arg}")
+            yield event.plain_result(f"⏰ 你的签到时间已更新: {old_time} → {new_time}")
             logger.info(f"用户 {sid} 签到时间: {old_time} → {arg}")
 
         else:
