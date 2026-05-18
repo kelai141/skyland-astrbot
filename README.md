@@ -26,6 +26,7 @@
 | `/skland sign` | 立即手动签到 | 所有人 |
 | `/skland status` | 查看我的签到状态 | 所有人 |
 | `/skland unbind` | 解绑账号 | 所有人 |
+| `/skland did` | 查看设备指纹状态 | 所有人 |
 | `/skland list` | 查看所有已绑定用户 | 管理员 |
 | `/skland remove <id>` | 移除指定用户的绑定 | 管理员 |
 | `/skland broadcast <msg>` | 向所有用户群发消息 | 管理员 |
@@ -67,7 +68,7 @@ plugin i https://github.com/kelai141/skyland-astrbot
 ## 📦 项目结构
 
 ```
-astrbot_plugin_skland/
+astrbot_plugin_skyland/
 ├── metadata.yaml         # 插件元数据
 ├── main.py               # 插件主入口（指令 + 定时任务）
 ├── requirements.txt      # 依赖声明
@@ -80,7 +81,7 @@ astrbot_plugin_skland/
 
 ## 🔄 数据存储
 
-用户数据保存在 `data/plugins/astrbot_plugin_skland/users.json`，无需手动编辑。
+用户数据保存在 `data/plugin_data/astrbot_plugin_skyland/users.json`，无需手动编辑。
 
 ## 📝 注意事项
 
@@ -92,3 +93,13 @@ astrbot_plugin_skland/
 
 - 签到核心逻辑移植自 [FancyCabbage/skyland-auto-sign](https://gitee.com/FancyCabbage/skyland-auto-sign)
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) 插件框架
+
+## 📝 变更日志
+
+### v1.1.0 (2026-05-18)
+- 🔧 **修复**：签名请求头补全 `dId` 字段，与原始 skyland-auto-sign 完全一致
+- 🔧 **修复**：`/skland broadcast` 命令正确提取消息内容
+- 🔧 **修复**：终末地签到显式添加 `dId` 头
+
+### v1.0.0
+- 初始版本: 纯聊天交互的森空岛自动签到插件

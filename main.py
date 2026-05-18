@@ -46,7 +46,7 @@ _OLD_DATA_BASE = Path(str(_DATA_BASE).replace("astrbot_plugin_skyland", "astrbot
 _OLD_DATA_FILE = str(_OLD_DATA_BASE / "users.json")
 
 
-@register("astrbot_plugin_skyland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理", "v1.0.0")
+@register("astrbot_plugin_skyland", "森空岛签到", "森空岛（明日方舟/终末地）自动签到，纯聊天交互，多用户管理", "v1.1.0")
 class SklandSignPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -665,8 +665,15 @@ class SklandSignPlugin(Star):
             yield event.plain_result("❌ 仅管理员可使用此命令")
             return
 
-        # 获取消息内容（去掉 /skland broadcast 前缀后的纯文本）
-        msg = event.message_str.strip()
+        # 获取消息内容（去掉命令前缀 /skland broadcast ）
+        raw = event.message_str.strip()
+        for prefix in ('/skland broadcast ', '/skland broadcast', '/skland bc '):
+            if raw.startswith(prefix):
+                msg = raw[len(prefix):].strip()
+                break
+        else:
+            msg = ''
+
         if not msg:
             yield event.plain_result("⚠️ 请提供要群发的消息内容\n使用方法：/skland broadcast <消息内容>")
             return

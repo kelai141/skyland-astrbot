@@ -55,16 +55,19 @@ def _get_login_header() -> dict:
     return _LOGIN_HEADER_CACHE
 
 
-# 签名请求头模板（不包含 dId，避免数美 API 不可达导致整流程断裂）
+# 签名请求头模板（含 dId，与原始 skyland-auto-sign 完全一致）
+# 原始 header_for_sign: {'platform':'3','timestamp':'','dId':header_login['dId'],'vName':'1.0.0'}
+# 签名时务必包含 dId，否则森空岛 API 可能拒绝请求
 _SIGN_HEADER_CACHE = None
 
 def _get_sign_header_template() -> dict:
-    """懒加载并缓存签名请求头模板"""
+    """懒加载并缓存签名请求头模板（含 dId）"""
     global _SIGN_HEADER_CACHE
     if _SIGN_HEADER_CACHE is None:
         _SIGN_HEADER_CACHE = {
             'platform': '3',
             'timestamp': '',
+            'dId': get_d_id(),
             'vName': '1.0.0'
         }
     return _SIGN_HEADER_CACHE
@@ -271,6 +274,7 @@ async def sign_for_endfield(session: aiohttp.ClientSession, token: str, cred: st
         headers = HEADER.copy()
         headers['cred'] = cred
         headers['Content-Type'] = 'application/json'
+        headers['dId'] = _get_login_header()['dId']
         headers['sk-game-role'] = f'3_{role["roleId"]}_{role["serverId"]}'
         headers['referer'] = 'https://game.skland.com/'
         headers['origin'] = 'https://game.skland.com/'

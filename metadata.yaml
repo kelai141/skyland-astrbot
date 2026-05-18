@@ -2,7 +2,7 @@ name: astrbot_plugin_skyland
 display_name: 森空岛自动签到
 desc: 森空岛（明日方舟/终末地）自动签到插件，支持多用户管理，纯聊天交互无需 WebUI 配置。
 short_desc: 森空岛自动签到 - 多用户管理，纯聊天交互
-version: v1.0.0
+version: v1.1.0
 author: kelai141
 repo: https://github.com/kelai141/astrbot_plugin_skyland
 astrbot_version: ">=4.23"
