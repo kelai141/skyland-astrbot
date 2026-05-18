@@ -179,10 +179,15 @@ class SklandSignPlugin(Star):
             return await do_sign(session, cred_token, cred_cred)
 
     async def _notify_user(self, info: dict, message: str):
-        """向用户推送消息
+        """向用户推送消息（仅限私聊绑定的用户）
 
         使用 AstrBot 官方推荐的 MessageChain 构建主动消息。
+        群聊绑定的用户（或旧数据 missing bound_in_private）跳过推送。
         """
+        if not info.get("bound_in_private"):
+            logger.info(f"用户 {info.get('sender_id')} 非私聊绑定，跳过主动推送")
+            return
+
         target = info.get("notify_target")
         if not target:
             logger.warning(f"用户 {info.get('sender_id')} 没有通知目标，跳过推送")
@@ -295,6 +300,7 @@ class SklandSignPlugin(Star):
             "last_sign_result": None,
             "game_info": game_info,
             "notify_target": sid,
+            "bound_in_private": not bool(event.get_group_id()),  # 群聊绑定的旧数据不推送
         }
 
     # ==================== 指令系统（command_group 模式） ====================
