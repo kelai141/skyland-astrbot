@@ -207,7 +207,7 @@ async def get_grant_code(session: aiohttp.ClientSession, token: str) -> str:
 
 
 async def get_cred(session: aiohttp.ClientSession, grant: str) -> dict:
-    """用 grant_code 换取 cred"""
+    """用 grant_code 换取 cred 和 sign_token"""
     logger.info("[凭证] 步骤2/2: 用 grant_code 换取 cred …")
     resp = await api_post(session, CRED_CODE_URL, json_data={
         'code': grant,
@@ -215,8 +215,9 @@ async def get_cred(session: aiohttp.ClientSession, grant: str) -> dict:
     }, headers=_get_login_header())
     if resp.get('code') != 0:
         raise Exception(f'获取 cred 失败: {resp.get("message", resp)}')
-    logger.info("[凭证] cred 获取成功")
-    return resp['data']
+    data = resp['data']
+    logger.info(f"[凭证] cred 获取成功 (sign_token={data.get('token', '无')[:8]}…)")
+    return data
 
 
 async def get_cred_by_token(session: aiohttp.ClientSession, token: str) -> dict:
@@ -401,12 +402,14 @@ async def verify_token(token: str) -> tuple[bool, str, Optional[dict]]:
     try:
         logger.info("[验证] 步骤1: 获取凭证 (token → cred) …")
         async with aiohttp.ClientSession() as session:
-            cred_resp = await get_cred_by_token(session, token)
-            logger.info("[验证] 凭证获取成功")
+            cred_data = await get_cred_by_token(session, token)
+            sign_token = cred_data.get('token', token)  # CRED_TOKEN 才是签名密钥！
+            cred = cred_data.get('cred', '')
+            logger.info(f"[验证] 凭证获取成功 (sign_token={sign_token[:8]}… cred={cred[:8]}…)")
 
-            # Step 2: 获取角色列表
+            # Step 2: 获取角色列表（使用 CRED_TOKEN 签名）
             logger.info("[验证] 步骤2: 获取角色列表 …")
-            characters = await get_binding_list(session, token, cred_resp.get('cred', ''))
+            characters = await get_binding_list(session, sign_token, cred)
             logger.info(f"[验证] 获取到 {len(characters)} 个角色")
 
             # Step 3: 组装结果
@@ -420,7 +423,7 @@ async def verify_token(token: str) -> tuple[bool, str, Optional[dict]]:
             info = '、'.join(game_info) if game_info else '未检测到可签到的游戏角色'
             logger.info(f"[验证] ✅ 验证成功！角色: {info}")
             logger.info("=" * 50)
-            return True, info, cred_resp
+            return True, info, cred_data
 
     except Exception as e:
         logger.error(f"[验证] ❌ 验证失败: {type(e).__name__}: {e}")

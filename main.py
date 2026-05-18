@@ -176,7 +176,7 @@ class SklandSignPlugin(Star):
                 info["cred_token"] = cred_token
                 self._save_data()
 
-            return await do_sign(session, token, cred_cred)
+            return await do_sign(session, cred_token, cred_cred)
 
     async def _notify_user(self, info: dict, message: str):
         """向用户推送消息
