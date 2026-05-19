@@ -99,7 +99,6 @@ async def handle_time_config(plugin, event: AstrMessageEvent, action: str = None
                 f"⏰ 签到时间已设置为 每天 {state.sign_time}\n"
                 f"⏳ 今日 {state.sign_time} 已过，现在为你执行签到…"
             )
-            from .sign import handle_sign
             async for msg in handle_sign(plugin, event):
                 yield msg
         else:

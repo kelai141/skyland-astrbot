@@ -178,6 +178,7 @@ class SklandSignPlugin(Star):
             "bound_at": state.bound_at,
             "notify_target": state.notify_target,
         })
+        logger.info(f"[数据] 已保存用户 {sender_id[:16]} | sign_time={state.sign_time} | push={state.push_enabled}")
 
     async def _notify_user(self, user_info: dict, message: str):
         """向用户发送通知消息"""
@@ -208,49 +209,71 @@ class SklandSignPlugin(Star):
             last_checked_slot: Optional[int] = None  # 上次检查的"一天中的分钟索引"
 
             while True:
-                now = datetime.now()
-                current_minute_slot = now.hour * 60 + now.minute  # 0-1439
-                today = date.today().isoformat()
+                try:
+                    now = datetime.now()
+                    current_minute_slot = now.hour * 60 + now.minute  # 0-1439
+                    today = date.today().isoformat()
 
-                # 确定需要检查的分钟范围（含当前分钟，防漏）
-                if last_checked_slot is None:
-                    slots_to_check = [current_minute_slot]
-                else:
-                    # 从上次检查的下一分钟到当前分钟（包含）
-                    start = last_checked_slot + 1
-                    if start > current_minute_slot:
-                        # 跨越了 0 点（极少情况），重置
+                    # 每 60 分钟打印一次心跳日志（方便排查循环是否存活）
+                    if current_minute_slot % 60 == 0:
+                        user_count = len(self.store.get_users())
+                        logger.info(
+                            f"[心跳] {now.hour:02d}:{now.minute:02d} "
+                            f"循环正常 | 已绑定用户: {user_count}"
+                        )
+
+                    # 确定需要检查的分钟范围（含当前分钟，防漏）
+                    if last_checked_slot is None:
                         slots_to_check = [current_minute_slot]
                     else:
-                        slots_to_check = list(range(start, current_minute_slot + 1))
+                        # 从上次检查的下一分钟到当前分钟（包含）
+                        start = last_checked_slot + 1
+                        if start > current_minute_slot:
+                            # 跨越了 0 点（极少情况），重置
+                            slots_to_check = [current_minute_slot]
+                        else:
+                            slots_to_check = list(range(start, current_minute_slot + 1))
 
-                for slot in slots_to_check:
-                    ch, cm = divmod(slot, 60)
-                    due_users = []
-                    for sid, info in self.store.get_users().items():
-                        user_time = info.get("sign_time", "09:05")
-                        try:
-                            uh, um = map(int, user_time.split(":"))
-                        except (ValueError, AttributeError):
-                            uh, um = 9, 5
-                        if uh == ch and um == cm:
-                            state = self._load_user_state(sid)
-                            if state:
-                                due_users.append((sid, state))
+                    for slot in slots_to_check:
+                        ch, cm = divmod(slot, 60)
+                        due_users = []
+                        for sid, info in self.store.get_users().items():
+                            user_time = info.get("sign_time", "09:05")
+                            try:
+                                uh, um = map(int, user_time.split(":"))
+                            except (ValueError, AttributeError):
+                                uh, um = 9, 5
+                            if uh == ch and um == cm:
+                                state = self._load_user_state(sid)
+                                if state:
+                                    due_users.append((sid, state))
 
-                    if due_users:
-                        logger.info(f"[{ch:02d}:{cm:02d}] 触发签到，{len(due_users)} 个用户")
-                        await self._auto_sign_batch(due_users)
+                        if due_users:
+                            logger.info(
+                                f"[{ch:02d}:{cm:02d}] 触发签到，{len(due_users)} 个用户: "
+                                + ", ".join(sid[:16] for sid, _ in due_users)
+                            )
+                            await self._auto_sign_batch(due_users)
 
-                last_checked_slot = current_minute_slot
+                    last_checked_slot = current_minute_slot
 
-                # 等待到下一分钟
-                sleep_sec = 60 - datetime.now().second + 0.5
-                await asyncio.sleep(sleep_sec)
+                    # 等待到下一分钟
+                    sleep_sec = 60 - datetime.now().second + 0.5
+                    await asyncio.sleep(sleep_sec)
+
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # 循环内部异常不得导致整个后台任务退出
+                    logger.error(f"自动签到循环内部异常（3s 后恢复）: {e}", exc_info=True)
+                    await asyncio.sleep(3)
 
         except asyncio.CancelledError:
             logger.info("自动签到循环被取消")
             raise
+        except Exception as e:
+            # 极端情况：最后一次保底
+            logger.critical(f"自动签到循环致命异常，已退出: {e}", exc_info=True)
 
     async def _auto_sign_batch(self, users: list[tuple[str, UserSignState]]):
         """批量自动签到"""
