@@ -167,32 +167,30 @@ class SkylandSignEngine:
     # ==================== 签到 ====================
 
     async def sign(self, state: UserSignState) -> SignResult:
-        """为单个用户执行签到（到达签到时间后无条件调用 API 确认状态）
+        """为单个用户执行签到
 
-        - API 返回 code=0 → 新签到成功 → signed_games
-        - API 返回「已签到」→ 今天已签到 → already_signed_games
-        - API 返回其他错误 → 真实失败 → failed_games
-
-        无论如何都会更新 last_sign_date（API 已确认今天的签到状态）。
+        匹配原仓库 skyland-auto-sign：每次签到前先 get_cred_by_token(token)
+        获取新的 cred，而非缓存上次的 cred（cred 有效期远短于 24h，缓存会导致过期）。
         """
         try:
-            await self._ensure_credential(state)
+            # ① 获取新凭证（匹配原仓库：每次签到都调用 get_cred_by_token）
+            cred_data = await self.api.get_cred_by_token(state.credential.token)
+            state.credential.sign_token = cred_data.get('token', state.credential.token)
+            state.credential.cred = cred_data.get('cred', '')
+            state.credential.refreshed_at = beijing_now().isoformat()
+
+            # ② 用新凭证签到
             raw_results = await self.api.do_sign(
                 state.credential.sign_token,
                 state.credential.cred,
             )
 
-            # 分类整理结果
-            signed = []
-            already = []
-            failed = []
-            messages = []
-
+            # ③ 分类整理结果
+            signed, already, failed, messages = [], [], [], []
             for r in raw_results:
                 msg = r["message"]
                 game = r.get("game", "未知")
                 messages.append(msg)
-
                 if r["status"] == "signed":
                     signed.append(game)
                 elif r["status"] == "already":
@@ -200,10 +198,8 @@ class SkylandSignEngine:
                 else:
                     failed.append(game)
 
-            # 更新状态：API 已确认今天的签到状态
             today = beijing_today().isoformat()
             state.last_sign_date = today
-
             if signed and not failed:
                 state.last_sign_result = '✅ ' + ' | '.join(messages)
             elif signed and failed:
@@ -223,9 +219,17 @@ class SkylandSignEngine:
             )
 
         except SkylandAuthError as e:
-            # 认证失败，刷新后重试一次
+            # ④ get_cred_by_token 失败 → 尝试 refresh_token 兜底
             try:
-                await self._refresh_credential(state)
+                new_token = await self.api.refresh_token(
+                    state.credential.token, state.credential.cred
+                )
+                state.credential.token = new_token
+                cred_data = await self.api.get_cred_by_token(new_token)
+                state.credential.sign_token = cred_data.get('token', new_token)
+                state.credential.cred = cred_data.get('cred', '')
+                state.credential.refreshed_at = beijing_now().isoformat()
+
                 raw_results = await self.api.do_sign(
                     state.credential.sign_token,
                     state.credential.cred,
@@ -255,7 +259,7 @@ class SkylandSignEngine:
                     error=(messages[0] if failed else None),
                 )
             except Exception as retry_err:
-                # 凭证刷新也失败了 → 不可恢复，标记为过期并提示重新绑定
+                # refresh 也失败 → 永久过期
                 state.token_expired = True
                 err_msg = (
                     f'你的登录凭证已过期，自动刷新也失败了。\n'
@@ -294,19 +298,6 @@ class SkylandSignEngine:
         return results
 
     # ==================== 凭证管理 ====================
-
-    async def _ensure_credential(self, state: UserSignState):
-        """确保凭证有效（必要时刷新）"""
-        if not state.credential.refreshed_at:
-            return
-
-        try:
-            refreshed = datetime.fromisoformat(state.credential.refreshed_at)
-            window = timedelta(hours=self.config.cred_refresh_window_hours)
-            if beijing_now() - refreshed > window:
-                await self._refresh_credential(state)
-        except (ValueError, TypeError):
-            pass
 
     async def _refresh_credential(self, state: UserSignState):
         """刷新凭证"""
