@@ -178,6 +178,7 @@ class SkylandSignEngine:
             state.credential.sign_token = cred_data.get('token', state.credential.token)
             state.credential.cred = cred_data.get('cred', '')
             state.credential.refreshed_at = beijing_now().isoformat()
+            state.token_expired = False  # 成功获取新凭证 → 清除过期标记
 
             # ② 用新凭证签到
             raw_results = await self.api.do_sign(
@@ -229,6 +230,7 @@ class SkylandSignEngine:
                 state.credential.sign_token = cred_data.get('token', new_token)
                 state.credential.cred = cred_data.get('cred', '')
                 state.credential.refreshed_at = beijing_now().isoformat()
+                state.token_expired = False  # refresh 成功 → 清除过期标记
 
                 raw_results = await self.api.do_sign(
                     state.credential.sign_token,
